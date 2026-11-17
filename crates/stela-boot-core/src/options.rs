@@ -38,6 +38,21 @@ pub const GUEST_PES: &str = "--guest-pes";
 /// place of the monitor's preferred mode: for a capture device that cannot
 /// take the mode its EDID prefers.
 pub const DISPLAY_SIZE: &str = "--display-size";
+/// VetTV GL66 experimental (`--copy-refresh-hz HZ`): the most refresh, in
+/// whole hertz, the DCP model advertises and paces macOS at while a bound GPU
+/// with no display of its own has its frames copied by the CPU into the
+/// firmware's framebuffer on another adapter (a muxless laptop's panel on
+/// the integrated GPU). `0` keeps the panel's own EDID rate, as upstream
+/// does. Unset, [`DEFAULT_COPY_REFRESH_HZ`] applies. It changes nothing when
+/// a GPU's own output shows macOS.
+pub const COPY_REFRESH_HZ: &str = "--copy-refresh-hz";
+/// The copy path's refresh cap when `--copy-refresh-hz` is not given: 60 Hz,
+/// the rate the DCP model already falls back to for a refresh it cannot
+/// advertise. A 144 Hz laptop panel otherwise has every changed row copied
+/// by one CPU up to 144 times a second.
+pub const DEFAULT_COPY_REFRESH_HZ: u32 = 60;
+/// The highest `--copy-refresh-hz` accepted.
+pub const MAX_COPY_REFRESH_HZ: u32 = 480;
 pub const MAINTENANCE_WRITE: &str = "--maintenance-write";
 /// Boots the installed system to its single-user shell.
 pub const SINGLE_USER: &str = "--single-user";
@@ -282,6 +297,9 @@ pub struct System {
     pub guest_pes: Option<usize>,
     /// The size a GPU's display is taken in ([`DISPLAY_SIZE`]).
     pub display_size: Option<(u32, u32)>,
+    /// The copy path's refresh cap ([`COPY_REFRESH_HZ`]); `None` is
+    /// [`DEFAULT_COPY_REFRESH_HZ`], `Some(0)` no cap.
+    pub copy_refresh_hz: Option<u32>,
     /// Check owned AP startup/host resources, then stop before guest entry.
     pub native_bootstrap_check: bool,
     /// Bounded checked-memory kernel execution on the selected cores.
@@ -397,6 +415,7 @@ impl Default for System {
             native_cores: None,
             guest_pes: None,
             display_size: None,
+            copy_refresh_hz: None,
             native_bootstrap_check: false,
             native_shared_check: false,
             native_artifacts: false,
@@ -552,6 +571,15 @@ fn flag(set: &mut bool, duplicate: Error) -> Result<(), Error> {
 }
 
 impl System {
+    /// The copy path's refresh cap in millihertz, `None` for no cap
+    /// ([`COPY_REFRESH_HZ`]).
+    pub fn copy_refresh_cap_millihertz(&self) -> Option<u32> {
+        match self.copy_refresh_hz.unwrap_or(DEFAULT_COPY_REFRESH_HZ) {
+            0 => None,
+            hz => Some(hz * 1000),
+        }
+    }
+
     /// This boot starts the macOS the Preboot disk holds, which needs a GPU;
     /// its recoveryOS and a staged update's installer show on the firmware's
     /// display, as a restore does.
@@ -851,6 +879,7 @@ impl fmt::Display for System {
             self.display_size
                 .map(|(width, height)| alloc::format!("{width}x{height}")),
         )?;
+        line.value(COPY_REFRESH_HZ, self.copy_refresh_hz)?;
         line.flag("--native-rounds", self.native_rounds)?;
         line.flag("--native-artifacts", self.native_artifacts)?;
         line.flag("--native-bootstrap-check", self.native_bootstrap_check)?;

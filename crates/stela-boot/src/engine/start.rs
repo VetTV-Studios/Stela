@@ -1700,7 +1700,7 @@ fn place_devices(
                 let screen = screen.relocated(layout::physical(screen.base as u64) as usize);
                 let scanout = display::GopScanout::new(screen, options.scanout_mirror);
                 let scanout = match copied {
-                    true => scanout.copying_gpu_frames(),
+                    true => scanout.copying_gpu_frames(options.copy_refresh_cap_millihertz()),
                     false => scanout,
                 };
                 alloc::boxed::Box::new(scanout)

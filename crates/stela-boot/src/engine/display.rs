@@ -463,7 +463,21 @@ impl GopScanout {
     /// GPU. The CPU copies each frame's changed rows, at the panel's rate
     /// as its EDID prefers it, which the DCP model advertises and paces
     /// macOS by. Said once in the log and on the boot screen.
-    pub fn copying_gpu_frames(self) -> Self {
+    ///
+    /// VetTV GL66 experimental: `cap_millihertz` (`--copy-refresh-hz`, 60 Hz
+    /// unless set, `None` for no cap) lowers the rate the DCP model
+    /// advertises and paces macOS by, so a 144 Hz panel has its changed rows
+    /// copied by the CPU at most 60 times a second. The panel keeps its own
+    /// mode; the firmware's framebuffer is only memory it scans out.
+    pub fn copying_gpu_frames(mut self, cap_millihertz: Option<u32>) -> Self {
+        if let Some(cap) = cap_millihertz.filter(|&cap| cap != 0 && cap < self.refresh_millihertz) {
+            output::arguments(format_args!(
+                "DISPLAY GL66 experimental: copied frames paced at {cap} mHz, not the panel's {} \
+                 mHz (--copy-refresh-hz 0 keeps the panel's rate)\n",
+                self.refresh_millihertz
+            ));
+            self.refresh_millihertz = cap;
+        }
         let ScanoutMode { width, height, .. } = self.mode;
         output::arguments(format_args!(
             "DISPLAY no GPU output has a display: macOS is drawn on the GPU and copied to the \

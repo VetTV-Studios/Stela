@@ -1238,6 +1238,25 @@ fn claim(
             if decode.memory_was_off { "off" } else { "on" }
         ));
     }
+    // VetTV GL66 diagnostic, read only: the GPU's PCIe Link Control as
+    // firmware left it (ASPM L0s bit 0, L1 bit 1) and its link speed, so a
+    // log of a GPU that later stops answering MMIO (all ones, as issue #197
+    // shows on a muxless GA107) says whether firmware had link power
+    // management on. Nothing is written.
+    match (
+        stela_drivers::bus::pci::link_control_word(function),
+        stela_drivers::bus::pci::link_speed(function),
+    ) {
+        (Ok(control), Ok(speed)) => output::arguments(format_args!(
+            "GPU {address} GL66 diagnostic: PCIe link control {control:#06x} (ASPM L0s={} \
+             L1={}) link speed gen{speed}\n",
+            control & 1,
+            (control >> 1) & 1,
+        )),
+        (control, speed) => output::arguments(format_args!(
+            "GPU {address} GL66 diagnostic: PCIe link unread: {control:?} {speed:?}\n"
+        )),
+    }
     let config = function
         .config()
         .retain_epoch()
