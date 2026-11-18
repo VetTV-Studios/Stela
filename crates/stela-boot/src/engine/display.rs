@@ -460,23 +460,27 @@ impl GopScanout {
     /// This scanout shows frames a bound GPU drew while no output of any
     /// GPU has a display: on a PC whose screen is wired to another adapter,
     /// as a laptop with no display mux wires its panel to the integrated
-    /// GPU. The CPU copies each frame's changed rows, at the panel's rate
-    /// as its EDID prefers it, which the DCP model advertises and paces
-    /// macOS by. Said once in the log and on the boot screen.
+    /// GPU. The CPU copies each frame's changed rows at the rate the DCP
+    /// model advertises and paces macOS by: upstream, the panel's rate as
+    /// its EDID prefers it. Said once in the log and on the boot screen.
     ///
     /// VetTV GL66 experimental: `cap_millihertz` (`--copy-refresh-hz`, 60 Hz
-    /// unless set, `None` for no cap) lowers the rate the DCP model
-    /// advertises and paces macOS by, so a 144 Hz panel has its changed rows
-    /// copied by the CPU at most 60 times a second. The panel keeps its own
-    /// mode; the firmware's framebuffer is only memory it scans out.
+    /// unless set, `None` for no cap) lowers that rate
+    /// ([`stela_boot_core::copy_refresh::paced_millihertz`]), so a 144 Hz
+    /// panel has its changed rows copied by the CPU at most 60 times a
+    /// second. The panel keeps its own mode; the firmware's framebuffer is
+    /// only memory it scans out.
     pub fn copying_gpu_frames(mut self, cap_millihertz: Option<u32>) -> Self {
-        if let Some(cap) = cap_millihertz.filter(|&cap| cap != 0 && cap < self.refresh_millihertz) {
+        use stela_boot_core::copy_refresh::{frame_interval_ns, paced_millihertz};
+        let paced = paced_millihertz(self.refresh_millihertz, cap_millihertz);
+        if paced != self.refresh_millihertz {
             output::arguments(format_args!(
-                "DISPLAY GL66 experimental: copied frames paced at {cap} mHz, not the panel's {} \
-                 mHz (--copy-refresh-hz 0 keeps the panel's rate)\n",
+                "DISPLAY GL66 experimental: copied frames paced at {paced} mHz ({} ns a frame), \
+                 not the panel's {} mHz (--copy-refresh-hz 0 keeps the panel's rate)\n",
+                frame_interval_ns(paced).unwrap_or(0),
                 self.refresh_millihertz
             ));
-            self.refresh_millihertz = cap;
+            self.refresh_millihertz = paced;
         }
         let ScanoutMode { width, height, .. } = self.mode;
         output::arguments(format_args!(

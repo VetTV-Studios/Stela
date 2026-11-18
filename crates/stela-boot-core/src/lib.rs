@@ -24,6 +24,7 @@ pub mod bundle_repair;
 pub mod chain_check;
 pub mod chosen_disk;
 pub mod console_lines;
+pub mod copy_refresh;
 #[cfg(feature = "native-acpi")]
 pub mod crs;
 pub mod disk_speed;
