@@ -39,6 +39,7 @@ impl ParseState<'_> {
             MAINTENANCE_WRITE => options.maintenance_write = true,
             SINGLE_USER => options.single_user = true,
             SCANOUT_MIRROR => options.scanout_mirror = true,
+            GL66_ASPM_OFF => flag(&mut options.gl66_aspm_off, Error::DuplicateGl66AspmOff)?,
             "--monitor-trace" => options.monitor_trace = true,
             "--display-trace" => options.display_trace = true,
             "--native-shared-check" => flag(
@@ -84,6 +85,19 @@ impl ParseState<'_> {
                     return Err(Error::DisplaySize);
                 }
                 options.display_size = Some((width, height));
+            }
+            COPY_REFRESH_HZ => {
+                if options.copy_refresh_hz.is_some() {
+                    return Err(Error::DuplicateCopyRefresh);
+                }
+                let hz = value()
+                    .ok_or(Error::CopyRefresh)?
+                    .parse::<u32>()
+                    .map_err(|_| Error::CopyRefresh)?;
+                if hz > MAX_COPY_REFRESH_HZ {
+                    return Err(Error::CopyRefresh);
+                }
+                options.copy_refresh_hz = Some(hz);
             }
             "--restore-study" => options.restore = true,
             "--restore-source" => {

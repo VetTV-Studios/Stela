@@ -1474,6 +1474,7 @@ fn open_gpus(
         Vec<stela_drivers::probe::IsaBridge>,
         Vec<(stela_drivers::bus::pci::Address, String)>,
     ),
+    aspm_off: bool,
 ) -> bool {
     let heap = handoff.heap.physical..handoff.heap.physical + handoff.heap.bytes;
     let guest_ram = handoff.guest[..handoff.guest_count]
@@ -1528,7 +1529,14 @@ fn open_gpus(
             .ok()
             .and_then(|entropy| stela_linux::random::Seeded::from_entropy(&*entropy).ok());
         let (claimed, refused) = random.as_ref().map_or_else(Default::default, |_| {
-            gpu::claim_all(&services, &adapters, &isa_bridges, gop, firmware.as_ref())
+            gpu::claim_all(
+                &services,
+                &adapters,
+                &isa_bridges,
+                gop,
+                firmware.as_ref(),
+                aspm_off,
+            )
         });
         (claimed, refused, random)
     });
@@ -1700,7 +1708,7 @@ fn place_devices(
                 let screen = screen.relocated(layout::physical(screen.base as u64) as usize);
                 let scanout = display::GopScanout::new(screen, options.scanout_mirror);
                 let scanout = match copied {
-                    true => scanout.copying_gpu_frames(),
+                    true => scanout.copying_gpu_frames(options.copy_refresh_cap_millihertz()),
                     false => scanout,
                 };
                 alloc::boxed::Box::new(scanout)
@@ -3183,6 +3191,7 @@ fn start_devices(
                     handoff,
                     host_firmware,
                     (gpus, isa_bridges, gpu_companions),
+                    options.gl66_aspm_off,
                 )
             {
                 let firmware = handoff

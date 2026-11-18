@@ -1,0 +1,195 @@
+# VetTV Studios: build the GL66 branch's stela.efi on Linux, then the stela
+# CLI for Windows x86_64 and Linux x86_64 with that stela.efi embedded, and
+# keep them as workflow artifacts. Adapted from release.yml's efi and cli
+# jobs; it publishes nothing (no release, no tag) and builds no Stela.app
+# (macOS only), so the kext installs no helper app.
+name: gl66-build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [msi-gl66/stela-v0.5-gl66]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gl66-build-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # The fork's own unit tests, which ci.yml (stela-cli only) does not run:
+  # the option parser and copy-refresh math in stela-boot-core, and the
+  # ASPM helper in stela-driver-base. The artifacts do not wait for it.
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install Clang 21
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends clang-21 llvm-21
+          echo /usr/lib/llvm-21/bin >> "$GITHUB_PATH"
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install
+          rustc --version
+
+      - name: Test
+        run: cargo test --locked -p stela-boot-core -p stela-driver-base --lib
+
+  efi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install Clang 21
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            clang-21 lld-21 llvm-21 llvm-21-dev libclang-21-dev libclang-cpp21-dev ninja-build
+          echo /usr/lib/llvm-21/bin >> "$GITHUB_PATH"
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install
+          rustc --version
+          clang --version | head -1
+
+      - name: Fetch upstream sources
+        run: cargo xtask gpu fetch
+
+      # STELA_RELEASE: fail rather than leave out NVK, the one Vulkan driver
+      # a release must carry.
+      - name: Build stela.efi
+        env:
+          STELA_RELEASE: "1"
+        run: |
+          cargo xtask boot build --release
+          efi=target/boot/x86_64-unknown-uefi/release/stela-deploy.efi
+          [[ "$(head -c 2 "$efi")" == MZ ]] || { echo "::error::$efi is not a PE image"; exit 1; }
+          for marker in 'GL66 experimental' 'GL66 diagnostic' '--gl66-aspm-off'; do
+            grep -aqF -e "$marker" "$efi" || { echo "::error::$efi lacks '$marker'"; exit 1; }
+          done
+          mkdir -p dist && cp "$efi" dist/stela.efi
+          (cd dist && sha256sum stela.efi | tee SHA256SUMS)
+          { echo "stela.efi: $(stat -c %s dist/stela.efi) bytes"; echo "sha256 $(sha256sum dist/stela.efi | cut -d' ' -f1)"; } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stela-efi-gl66
+          path: dist/
+          if-no-files-found: error
+
+  cli:
+    needs: efi
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+          - os: windows-2025
+            platform: windows-x86_64
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      ARCHIVE: stela-gl66-${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Put LLVM on PATH
+        run: |
+          case "$RUNNER_OS" in
+            Windows) echo 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH" ;;
+            Linux)
+              curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+              release="$(lsb_release -cs)"
+              echo "deb http://apt.llvm.org/$release/ llvm-toolchain-$release-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
+              sudo apt-get update -q
+              sudo apt-get install -y -q --no-install-recommends clang-21 llvm-21
+              echo /usr/lib/llvm-21/bin >> "$GITHUB_PATH"
+              ;;
+          esac
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+          rustc --version
+          tools=clang
+          [[ "$RUNNER_OS" == Windows ]] && tools="clang llvm-lib"
+          for tool in $tools; do
+            command -v "$tool" >/dev/null || { echo "::error::$tool is not on PATH"; exit 1; }
+          done
+          clang --version | head -1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: stela-efi-gl66
+          path: efi
+
+      - name: Build stela
+        run: |
+          export STELA_EFI="$PWD/efi/stela.efi"
+          cargo build --release --locked -p stela-cli --target "${{ matrix.target }}"
+          mkdir -p "$ARCHIVE"
+          case "$RUNNER_OS" in
+            Windows) cp target/${{ matrix.target }}/release/stela.exe "$ARCHIVE/" ;;
+            *) cp target/${{ matrix.target }}/release/stela "$ARCHIVE/" ;;
+          esac
+
+      - name: Check stela
+        run: |
+          binary="$(ls "$ARCHIVE"/stela*)"
+          version="$(awk '/^\[workspace.package\]/{s=1;next} s && /^\[/{exit} s && /^version = /{gsub(/"/,"",$3);print $3;exit}' Cargo.toml)"
+          actual="$("$binary" --version)"
+          [[ "$actual" == "stela $version" ]] || { echo "::error::$binary --version printed '$actual', not 'stela $version'"; exit 1; }
+          python=python3
+          if [[ "$RUNNER_OS" == Windows ]]; then python=python; fi
+          "$python" -c 'import sys; sys.exit(open(sys.argv[1], "rb").read() not in open(sys.argv[2], "rb").read())' efi/stela.efi "$binary" \
+            || { echo "::error::$binary does not hold the stela.efi the efi job built"; exit 1; }
+          "$binary" create --help >/dev/null
+
+      - name: Package
+        run: |
+          cp -R LICENSE NOTICE LICENSES "$ARCHIVE/"
+          cp NOTES/GL66.md "$ARCHIVE/"
+          cp efi/stela.efi "$ARCHIVE/stela.efi"
+          (cd "$ARCHIVE" && sha256sum stela* > SHA256SUMS && cat SHA256SUMS)
+          echo "$ARCHIVE: $(cat "$ARCHIVE/SHA256SUMS" | tr '\n' ' ')" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE }}
+          path: ${{ env.ARCHIVE }}/
+          if-no-files-found: error

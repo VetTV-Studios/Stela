@@ -132,6 +132,27 @@ fn no_boot_that_starts_metal_clients_sees_the_agx_model_and_restore_ramdisks_kee
 }
 
 #[test]
+fn copy_refresh_cap_defaults_to_60_hz_and_round_trips() {
+    let default = round_trip("--system");
+    assert_eq!(default.copy_refresh_hz, None);
+    assert_eq!(default.copy_refresh_cap_millihertz(), Some(60_000));
+    assert!(!default.to_string().contains(COPY_REFRESH_HZ));
+    let off = round_trip(&format!("--system {COPY_REFRESH_HZ} 0"));
+    assert_eq!(off.copy_refresh_hz, Some(0));
+    assert_eq!(off.copy_refresh_cap_millihertz(), None);
+    let capped = round_trip(&format!("--system {COPY_REFRESH_HZ} 72"));
+    assert_eq!(capped.copy_refresh_cap_millihertz(), Some(72_000));
+    for line in [
+        format!("--system {COPY_REFRESH_HZ}"),
+        format!("--system {COPY_REFRESH_HZ} fast"),
+        format!("--system {COPY_REFRESH_HZ} 481"),
+        format!("--system {COPY_REFRESH_HZ} 60 {COPY_REFRESH_HZ} 60"),
+    ] {
+        assert!(System::parse(&line).is_err(), "{line}");
+    }
+}
+
+#[test]
 fn scanout_mirror_round_trips() {
     assert!(!round_trip("--system").scanout_mirror);
     assert!(round_trip(&format!("--system {SCANOUT_MIRROR}")).scanout_mirror);
@@ -413,3 +434,20 @@ fn numbers_take_decimal_and_separated_hex() {
 
 mod constraints;
 mod grammar;
+
+#[test]
+fn gl66_aspm_off_is_off_unless_given_and_round_trips() {
+    let default = round_trip("--system");
+    assert!(!default.gl66_aspm_off);
+    assert!(!default.to_string().contains(GL66_ASPM_OFF));
+    let on = round_trip(&format!("--system {GL66_ASPM_OFF}"));
+    assert!(on.gl66_aspm_off);
+    assert!(on.to_string().contains(GL66_ASPM_OFF));
+    let both = round_trip(&format!("--system {COPY_REFRESH_HZ} 0 {GL66_ASPM_OFF}"));
+    assert!(both.gl66_aspm_off);
+    assert_eq!(both.copy_refresh_cap_millihertz(), None);
+    assert_eq!(
+        System::parse(&format!("--system {GL66_ASPM_OFF} {GL66_ASPM_OFF}")),
+        Err(Error::DuplicateGl66AspmOff)
+    );
+}

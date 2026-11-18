@@ -1091,6 +1091,7 @@ fn claim(
     line: u32,
     gop: crate::pci_io::ScreenOwner,
     catalog: Arc<Catalog>,
+    aspm_off: bool,
 ) -> Result<Claimed, ServiceError> {
     use crate::pci_io::ScreenOwner;
     let address = adapter.address;
@@ -1237,6 +1238,84 @@ fn claim(
             decode.power_state,
             if decode.memory_was_off { "off" } else { "on" }
         ));
+    }
+    // VetTV GL66 diagnostic, read only: the GPU's PCIe Link Control (ASPM
+    // L0s bit 0, L1 bit 1) and link speed, and the Link Control of the port
+    // above it, so a log of a GPU that later stops answering MMIO (all ones,
+    // as issue #197 shows on a muxless GA107) says whether link power
+    // management was on at either end. They are read after the GPU was
+    // brought to D0 above: a D3hot exit that resets the function leaves its
+    // own word at reset defaults, so the port's word is the firmware's
+    // setting in that case. L0s is per direction, so the port's L0s alone
+    // matters; L1 needs both ends. Nothing is written.
+    let aspm = |control: u16| alloc::format!("ASPM L0s={} L1={}", control & 1, (control >> 1) & 1);
+    match (
+        stela_drivers::bus::pci::link_control_word_of(&*function.config()),
+        stela_drivers::bus::pci::link_speed(function),
+    ) {
+        (Ok(Some(control)), Ok(speed)) => output::arguments(format_args!(
+            "GPU {address} GL66 diagnostic: PCIe link control {control:#06x} ({}) link speed \
+             gen{speed}\n",
+            aspm(control),
+        )),
+        (Ok(None), _) => output::arguments(format_args!(
+            "GPU {address} GL66 diagnostic: PCIe link control: none, the GPU has no PCIe link \
+             capability\n"
+        )),
+        (control, speed) => output::arguments(format_args!(
+            "GPU {address} GL66 diagnostic: PCIe link unread: {control:?} {speed:?}\n"
+        )),
+    }
+    match services.port_link_control(address) {
+        Ok(Some((port, control))) => output::arguments(format_args!(
+            "GPU {address} GL66 diagnostic: port {port} PCIe link control {control:#06x} ({})\n",
+            aspm(control),
+        )),
+        Ok(None) => output::arguments(format_args!(
+            "GPU {address} GL66 diagnostic: no port above it (root bus)\n"
+        )),
+        Err(error) => output::arguments(format_args!(
+            "GPU {address} GL66 diagnostic: port link control unread: {error:?}\n"
+        )),
+    }
+    // VetTV GL66 experimental (`--gl66-aspm-off`): ASPM L0s and L1 off at
+    // the GPU and at the port above it, here, before its driver starts it
+    // and so before GSP-RM boots. Each Link Control word is logged as found
+    // and as read back. A refusal is logged and the GPU still starts: an end
+    // not yet changed keeps its setting, and none is turned back on.
+    if aspm_off {
+        let word = |change: stela_drivers::bus::pci::LinkControlChange| {
+            alloc::format!(
+                "{:#06x} -> {:#06x} ({} -> {})",
+                change.before,
+                change.after,
+                aspm(change.before),
+                aspm(change.after),
+            )
+        };
+        match services.disable_link_aspm(function) {
+            Ok((own, port)) => {
+                output::arguments(format_args!(
+                    "GPU {address} GL66 experimental: --gl66-aspm-off: PCIe link control {}\n",
+                    word(own)
+                ));
+                match port {
+                    Some((port_address, port)) => output::arguments(format_args!(
+                        "GPU {address} GL66 experimental: --gl66-aspm-off: port {port_address} \
+                         link control {}\n",
+                        word(port)
+                    )),
+                    None => output::arguments(format_args!(
+                        "GPU {address} GL66 experimental: --gl66-aspm-off: no port above it \
+                         (root bus); only the GPU's link control changed\n"
+                    )),
+                }
+            }
+            Err(error) => output::arguments(format_args!(
+                "GPU {address} GL66 experimental: --gl66-aspm-off refused: {error:?}; an end not \
+                 yet changed keeps its ASPM setting, none is turned back on\n"
+            )),
+        }
     }
     let config = function
         .config()
@@ -1518,6 +1597,7 @@ pub(super) fn claim_all(
     isa_bridges: &[stela_drivers::probe::IsaBridge],
     gop: Result<crate::pci_io::ScreenOwner, String>,
     catalog: Option<&Arc<Catalog>>,
+    aspm_off: bool,
 ) -> (Vec<Claimed>, Vec<Refused>) {
     use stela_boot_core::gpu_status::Reason;
     let refused_as = |adapter: &gpu::Adapter, reason, why: &dyn core::fmt::Display| Refused {
@@ -1590,6 +1670,7 @@ pub(super) fn claim_all(
                     claimed.len() as u32,
                     source,
                     catalog.clone(),
+                    aspm_off,
                 )
             });
         match result {
