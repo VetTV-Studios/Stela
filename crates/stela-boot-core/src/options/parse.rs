@@ -39,6 +39,7 @@ impl ParseState<'_> {
             MAINTENANCE_WRITE => options.maintenance_write = true,
             SINGLE_USER => options.single_user = true,
             SCANOUT_MIRROR => options.scanout_mirror = true,
+            GL66_ASPM_OFF => flag(&mut options.gl66_aspm_off, Error::DuplicateGl66AspmOff)?,
             "--monitor-trace" => options.monitor_trace = true,
             "--display-trace" => options.display_trace = true,
             "--native-shared-check" => flag(

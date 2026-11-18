@@ -434,3 +434,20 @@ fn numbers_take_decimal_and_separated_hex() {
 
 mod constraints;
 mod grammar;
+
+#[test]
+fn gl66_aspm_off_is_off_unless_given_and_round_trips() {
+    let default = round_trip("--system");
+    assert!(!default.gl66_aspm_off);
+    assert!(!default.to_string().contains(GL66_ASPM_OFF));
+    let on = round_trip(&format!("--system {GL66_ASPM_OFF}"));
+    assert!(on.gl66_aspm_off);
+    assert!(on.to_string().contains(GL66_ASPM_OFF));
+    let both = round_trip(&format!("--system {COPY_REFRESH_HZ} 0 {GL66_ASPM_OFF}"));
+    assert!(both.gl66_aspm_off);
+    assert_eq!(both.copy_refresh_cap_millihertz(), None);
+    assert_eq!(
+        System::parse(&format!("--system {GL66_ASPM_OFF} {GL66_ASPM_OFF}")),
+        Err(Error::DuplicateGl66AspmOff)
+    );
+}

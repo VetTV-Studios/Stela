@@ -216,8 +216,13 @@ fn segment_windows<C: ConfigSpace>(
 fn link_control_optional<C: ConfigSpace>(
     function: &Function<C>,
 ) -> Result<Option<u16>, BlockError> {
+    link_control_in(&function.config)
+}
+/// [`link_control_optional`] over a bare configuration space, such as a
+/// bridge's owned mapping that is no [`Function`].
+fn link_control_in<C: ConfigSpace>(config: &C) -> Result<Option<u16>, BlockError> {
     let mut express = None;
-    for entry in function.config.capabilities() {
+    for entry in config.capabilities() {
         let entry = entry?;
         if entry.id == CAPABILITY_PCIE && express.replace(entry.offset).is_some() {
             return Err(BlockError::Unsupported("multiple PCIe capabilities"));
@@ -231,7 +236,7 @@ fn link_control_optional<C: ConfigSpace>(
             "PCIe link control outside capability space",
         ));
     }
-    let flags = function.config.read16(capability + PCIE_FLAGS)?;
+    let flags = config.read16(capability + PCIE_FLAGS)?;
     let port_type = (flags >> 4) & 15;
     if matches!(port_type, 9 | 10) {
         return Ok(None);
@@ -252,6 +257,15 @@ pub fn link_control_word<C: ConfigSpace>(function: &Function<C>) -> Result<u16, 
     match link_control_optional(function)? {
         Some(at) => Ok(function.config.read16(at)?),
         None => Ok(0),
+    }
+}
+/// The Link Control word of a bare configuration space, `None` when it has
+/// no PCIe link control (no PCIe capability, or a root complex integrated
+/// endpoint or event collector), unlike [`link_control_word`]'s 0.
+pub fn link_control_word_of<C: ConfigSpace>(config: &C) -> Result<Option<u16>, BlockError> {
+    match link_control_in(config)? {
+        Some(at) => Ok(Some(config.read16(at)?)),
+        None => Ok(None),
     }
 }
 pub fn link_speed<C: ConfigSpace>(function: &Function<C>) -> Result<u8, BlockError> {
@@ -295,13 +309,17 @@ fn upstream<C: ConfigSpace>(
 }
 
 fn clear_aspm<C: ConfigSpace>(function: &mut Function<C>, control: u16) -> Result<(), BlockError> {
-    let value = function.config.read16(control)?;
+    clear_aspm_in(&mut function.config, control)
+}
+/// [`clear_aspm`] over a bare configuration space.
+fn clear_aspm_in<C: ConfigSpace>(config: &mut C, control: u16) -> Result<(), BlockError> {
+    let value = config.read16(control)?;
     if value & PCIE_ASPM != 0 {
         // Narrow access is essential: Link Status shares this DWORD and
         // includes W1C fields that must not be acknowledged by this write.
-        function.config.write16(control, value & !PCIE_ASPM)?;
+        config.write16(control, value & !PCIE_ASPM)?;
     }
-    let status = function.config.read16(control)?;
+    let status = config.read16(control)?;
     if status & PCIE_ASPM != 0 {
         return Err(BlockError::Device {
             status: u32::from(status),
@@ -325,6 +343,75 @@ fn disable_aspm_with<C: ConfigSpace>(
         clear_aspm(&mut functions[index], control)?;
     }
     Ok(())
+}
+
+/// One end of a link's Link Control word around
+/// [`disable_aspm_device_and_port`]: as found, and as read back after.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LinkControlChange {
+    pub before: u16,
+    pub after: u16,
+}
+
+impl LinkControlChange {
+    /// ASPM L0s (bit 0) and L1 (bit 1) as `before` had them.
+    pub fn was_enabled(&self) -> bool {
+        self.before & PCIE_ASPM != 0
+    }
+}
+
+/// VetTV GL66 experimental (`--gl66-aspm-off`): clear ASPM L0s and L1 in
+/// the Link Control of a PCIe `device` and of the `port` directly above it
+/// (its root or switch downstream port), before the device's driver starts
+/// it. Both capabilities are validated before either end is written; the
+/// device is written first, then the port, as Linux `pcie_config_aspm_link`
+/// orders a disable. Each write is a narrow 16-bit write of Link Control
+/// alone, so Link Status's write-one-to-clear bits are never acknowledged,
+/// and each is read back: a refused setting is an error. Every other Link
+/// Control bit (Common Clock, clock power management, L1 PM substates'
+/// own controls) is kept. An error after the device's write leaves the
+/// device's ASPM off; nothing is ever turned back on. For a non-ARI
+/// multi-function device only states enabled in every function are
+/// enabled, so function 0's word alone turns the device's ASPM off.
+pub fn disable_aspm_device_and_port<D: ConfigSpace, P: ConfigSpace>(
+    device: &mut Function<D>,
+    port: Option<&mut P>,
+) -> Result<(LinkControlChange, Option<LinkControlChange>), BlockError> {
+    let device_control = link_control(device)?;
+    let port_control = match &port {
+        Some(port) => Some(link_control_in(&**port)?.ok_or(BlockError::Unsupported(
+            "the port above has no PCIe link control",
+        ))?),
+        None => None,
+    };
+    let device_before = device.config.read16(device_control)?;
+    let port_before = match (&port, port_control) {
+        (Some(port), Some(control)) => Some(port.read16(control)?),
+        _ => None,
+    };
+    for word in core::iter::once(device_before).chain(port_before) {
+        if word == u16::MAX {
+            return Err(BlockError::Device {
+                status: u32::from(word),
+            });
+        }
+    }
+    clear_aspm(device, device_control)?;
+    let device_change = LinkControlChange {
+        before: device_before,
+        after: device.config.read16(device_control)?,
+    };
+    let port_change = match (port, port_control, port_before) {
+        (Some(port), Some(control), Some(before)) => {
+            clear_aspm_in(port, control)?;
+            Some(LinkControlChange {
+                before,
+                after: port.read16(control)?,
+            })
+        }
+        _ => None,
+    };
+    Ok((device_change, port_change))
 }
 
 #[cfg(test)]

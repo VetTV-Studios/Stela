@@ -25,6 +25,7 @@ use stela_drivers::{
 };
 
 mod bus_reset;
+mod gl66_aspm;
 
 /// The captured native fabric with PCI command, interrupt and requester
 /// controls contained and its original writable maps retired.

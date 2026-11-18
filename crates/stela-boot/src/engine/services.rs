@@ -267,6 +267,26 @@ unsafe impl NativeServices for Services<'_> {
         })
     }
 
+    fn port_link_control(
+        &self,
+        address: Address,
+    ) -> Result<Option<(Address, u16)>, stela_drivers::block::BlockError> {
+        self.mmio.port_link_control(address)
+    }
+
+    fn disable_link_aspm(
+        &self,
+        function: &mut Function<OwnedConfig>,
+    ) -> Result<
+        (
+            stela_drivers::bus::pci::LinkControlChange,
+            Option<(Address, stela_drivers::bus::pci::LinkControlChange)>,
+        ),
+        stela_drivers::block::BlockError,
+    > {
+        self.mmio.disable_link_aspm(function)
+    }
+
     fn bridge(&self, _: Address) -> Result<Function<OwnedConfig>, ServiceError> {
         Err(ServiceError::Refused(
             "native bridge forwarding handoff unavailable",

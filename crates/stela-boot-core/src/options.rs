@@ -53,6 +53,13 @@ pub const COPY_REFRESH_HZ: &str = "--copy-refresh-hz";
 pub const DEFAULT_COPY_REFRESH_HZ: u32 = 60;
 /// The highest `--copy-refresh-hz` accepted.
 pub const MAX_COPY_REFRESH_HZ: u32 = 480;
+/// VetTV GL66 experimental (`--gl66-aspm-off`), off unless given: before a
+/// GPU's driver starts it (and so before NVIDIA's GSP boots), clear PCIe
+/// ASPM L0s and L1 in the Link Control of the GPU and of the bridge directly
+/// above it, logging each word before and after. For a GPU whose link stops
+/// answering under link power management, as issue #197 shows on a muxless
+/// GA107; try it only when a first boot log shows ASPM on.
+pub const GL66_ASPM_OFF: &str = "--gl66-aspm-off";
 pub const MAINTENANCE_WRITE: &str = "--maintenance-write";
 /// Boots the installed system to its single-user shell.
 pub const SINGLE_USER: &str = "--single-user";
@@ -300,6 +307,9 @@ pub struct System {
     /// The copy path's refresh cap ([`COPY_REFRESH_HZ`]); `None` is
     /// [`DEFAULT_COPY_REFRESH_HZ`], `Some(0)` no cap.
     pub copy_refresh_hz: Option<u32>,
+    /// Clear ASPM on each claimed GPU's link before it starts
+    /// ([`GL66_ASPM_OFF`]).
+    pub gl66_aspm_off: bool,
     /// Check owned AP startup/host resources, then stop before guest entry.
     pub native_bootstrap_check: bool,
     /// Bounded checked-memory kernel execution on the selected cores.
@@ -416,6 +426,7 @@ impl Default for System {
             guest_pes: None,
             display_size: None,
             copy_refresh_hz: None,
+            gl66_aspm_off: false,
             native_bootstrap_check: false,
             native_shared_check: false,
             native_artifacts: false,
@@ -880,6 +891,7 @@ impl fmt::Display for System {
                 .map(|(width, height)| alloc::format!("{width}x{height}")),
         )?;
         line.value(COPY_REFRESH_HZ, self.copy_refresh_hz)?;
+        line.flag(GL66_ASPM_OFF, self.gl66_aspm_off)?;
         line.flag("--native-rounds", self.native_rounds)?;
         line.flag("--native-artifacts", self.native_artifacts)?;
         line.flag("--native-bootstrap-check", self.native_bootstrap_check)?;

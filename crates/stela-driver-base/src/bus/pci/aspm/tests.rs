@@ -410,3 +410,81 @@ fn extended_headers_cannot_alias_l1ss_bodies_in_either_traversal_direction() {
         }
     }
 }
+
+#[test]
+fn gl66_aspm_off_clears_the_device_then_its_port_and_reports_both_words() {
+    let writes = Writes::default();
+    let mut gpu = device(address(0, 1, 0), None, &writes);
+    let mut port = device(address(0, 0, 1), Some((1, 1)), &writes);
+    let (gpu_change, port_change) =
+        disable_aspm_device_and_port(&mut gpu, Some(&mut port.config)).unwrap();
+    assert_eq!(
+        *writes.borrow(),
+        [(gpu.address, 0x50, 0xa5a0), (port.address, 0x50, 0xa5a0)]
+    );
+    let expected = LinkControlChange {
+        before: 0xa5a3,
+        after: 0xa5a0,
+    };
+    assert_eq!(gpu_change, expected);
+    assert_eq!(port_change, Some(expected));
+    assert!(gpu_change.was_enabled());
+    // Link Status, with its write-one-to-clear bits, is untouched.
+    assert_eq!(gpu.config.words[20] >> 16, 0xc000);
+    assert_eq!(port.config.words[20] >> 16, 0xc000);
+}
+
+#[test]
+fn gl66_aspm_off_writes_nothing_when_firmware_left_aspm_off() {
+    let writes = Writes::default();
+    let mut gpu = device(address(0, 1, 0), None, &writes);
+    let mut port = device(address(0, 0, 1), Some((1, 1)), &writes);
+    gpu.config.words[20] = 0xc000_a5a0;
+    port.config.words[20] = 0xc000_a5a0;
+    let (gpu_change, port_change) =
+        disable_aspm_device_and_port(&mut gpu, Some(&mut port.config)).unwrap();
+    assert!(writes.borrow().is_empty());
+    assert!(!gpu_change.was_enabled());
+    assert_eq!(gpu_change.before, gpu_change.after);
+    assert_eq!(port_change.map(|change| change.after), Some(0xa5a0));
+}
+
+#[test]
+fn gl66_aspm_off_on_a_root_bus_device_changes_only_its_own_word() {
+    let writes = Writes::default();
+    let mut gpu = device(address(0, 0, 3), None, &writes);
+    let (gpu_change, port_change) =
+        disable_aspm_device_and_port::<_, Config>(&mut gpu, None).unwrap();
+    assert_eq!(*writes.borrow(), [(gpu.address, 0x50, 0xa5a0)]);
+    assert_eq!(gpu_change.after, 0xa5a0);
+    assert_eq!(port_change, None);
+}
+
+#[test]
+fn gl66_aspm_off_validates_the_port_before_writing_either_end() {
+    let writes = Writes::default();
+    let mut gpu = device(address(0, 1, 0), None, &writes);
+    let mut port = device(address(0, 0, 1), Some((1, 1)), &writes);
+    // No capability list: the port has no PCIe link control.
+    port.config.words[1] = 0;
+    assert!(disable_aspm_device_and_port(&mut gpu, Some(&mut port.config)).is_err());
+    assert!(writes.borrow().is_empty());
+    assert_eq!(gpu.config.words[20], 0xc000_a5a3);
+}
+
+#[test]
+fn gl66_aspm_off_reports_a_port_that_keeps_aspm_and_never_reenables_the_device() {
+    let writes = Writes::default();
+    let mut gpu = device(address(0, 1, 0), None, &writes);
+    let mut port = device(address(0, 0, 1), Some((1, 1)), &writes);
+    port.config.refuses_aspm = true;
+    assert!(matches!(
+        disable_aspm_device_and_port(&mut gpu, Some(&mut port.config)),
+        Err(BlockError::Device { .. })
+    ));
+    assert_eq!(gpu.config.words[20], 0xc000_a5a0);
+    assert_eq!(
+        *writes.borrow(),
+        [(gpu.address, 0x50, 0xa5a0), (port.address, 0x50, 0xa5a0)]
+    );
+}

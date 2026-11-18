@@ -124,6 +124,39 @@ pub unsafe trait NativeServices {
     /// conflicting reset/configuration/routing owners throughout preparation.
     fn prepare_requester(&self, address: Address) -> Result<PreparingRequester, ServiceError>;
 
+    /// VetTV GL66 diagnostic, read only: the Link Control word of the bridge
+    /// directly above the function at `address`, with the bridge's address;
+    /// `None` on a root bus. A mount without that bridge's configuration
+    /// refuses.
+    fn port_link_control(
+        &self,
+        _address: Address,
+    ) -> Result<Option<(Address, u16)>, crate::block::BlockError> {
+        Err(crate::block::BlockError::Unsupported(
+            "this mount cannot read the port above a PCI function",
+        ))
+    }
+
+    /// VetTV GL66 experimental (`--gl66-aspm-off`): clear ASPM L0s and L1
+    /// at the cold requester `function` and at the bridge directly above it
+    /// ([`crate::bus::pci::disable_aspm_device_and_port`]), each Link
+    /// Control word as found and as read back, the bridge's with its
+    /// address. A mount without that bridge's configuration refuses.
+    fn disable_link_aspm(
+        &self,
+        _function: &mut Function<OwnedConfig>,
+    ) -> Result<
+        (
+            crate::bus::pci::LinkControlChange,
+            Option<(Address, crate::bus::pci::LinkControlChange)>,
+        ),
+        crate::block::BlockError,
+    > {
+        Err(crate::block::BlockError::Unsupported(
+            "this mount cannot change a PCIe link's ASPM",
+        ))
+    }
+
     /// The PCI-to-PCI bridge at `address` through an owned mapping of its
     /// configuration space, left forwarding, for a driver that sets its
     /// link's upstream end as Linux's ASPM core does through `bus->self`.
