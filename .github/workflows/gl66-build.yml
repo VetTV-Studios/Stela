@@ -26,6 +26,33 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  # The fork's own unit tests, which ci.yml (stela-cli only) does not run:
+  # the option parser and copy-refresh math in stela-boot-core, and the
+  # ASPM helper in stela-driver-base. The artifacts do not wait for it.
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install Clang 21
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends clang-21 llvm-21
+          echo /usr/lib/llvm-21/bin >> "$GITHUB_PATH"
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install
+          rustc --version
+
+      - name: Test
+        run: cargo test --locked -p stela-boot-core -p stela-driver-base --lib
+
   efi:
     runs-on: ubuntu-24.04
     timeout-minutes: 330
@@ -66,8 +93,8 @@ jobs:
           cargo xtask boot build --release
           efi=target/boot/x86_64-unknown-uefi/release/stela-deploy.efi
           [[ "$(head -c 2 "$efi")" == MZ ]] || { echo "::error::$efi is not a PE image"; exit 1; }
-          for marker in 'GL66 experimental' 'GL66 diagnostic'; do
-            grep -aq "$marker" "$efi" || { echo "::error::$efi lacks '$marker'"; exit 1; }
+          for marker in 'GL66 experimental' 'GL66 diagnostic' '--gl66-aspm-off'; do
+            grep -aqF -e "$marker" "$efi" || { echo "::error::$efi lacks '$marker'"; exit 1; }
           done
           mkdir -p dist && cp "$efi" dist/stela.efi
           (cd dist && sha256sum stela.efi | tee SHA256SUMS)
